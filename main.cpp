@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <wincodec.h>
+#include <dwmapi.h> 
 #include <mmsystem.h>
 #include <cmath>
 
@@ -8,34 +9,30 @@
 #pragma comment(lib, "Windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 enum SimulationMode { MODE_STRETCH, MODE_ROTATE };
 const SimulationMode CURRENT_MODE = MODE_STRETCH; 
 const float CURSOR_BASE_ANGLE = 45.0f;            
 
-// --- Polymorphic Cursor State Architecture ---
 struct CursorState {
-    HCURSOR sysHandle;          // Native Windows ID tracking handle
-    const wchar_t* filename;    // Local PNG asset path
-    ID2D1Bitmap* bitmap;        // Unique GPU texture layer
-    bool isCenterHotspot;       // True for I-Beams/Resizers, False for standard pointers
-    float manualHotspotX;       // Custom X calibration offset
-    float manualHotspotY;       // Custom Y calibration offset
+    HCURSOR sysHandle;          
+    const wchar_t* filename;    
+    ID2D1Bitmap* bitmap;        
+    bool isCenterHotspot;       
+    float manualHotspotX;       
+    float manualHotspotY;       
 };
 
-// Define all primary interactive cursor states
-const int CURSOR_COUNT = 7;
+const int CURSOR_COUNT = 5;
 CursorState cursorMap[CURSOR_COUNT] = {
-    { LoadCursor(nullptr, IDC_ARROW),       L"pointer.png", nullptr, false, 4.0f, 4.0f },
-    { LoadCursor(nullptr, IDC_HAND),        L"link.png",    nullptr, false, 8.0f, 2.0f },
-    { LoadCursor(nullptr, IDC_IBEAM),       L"text.png",    nullptr, true,  0.0f, 0.0f },
-    { LoadCursor(nullptr, IDC_WAIT),        L"busy.png",    nullptr, true,  0.0f, 0.0f },
-    { LoadCursor(nullptr, IDC_APPSTARTING), L"work.png",    nullptr, false, 4.0f, 4.0f },
-    { LoadCursor(nullptr, IDC_SIZEWE),      L"horz.png",    nullptr, true,  0.0f, 0.0f },
-    { LoadCursor(nullptr, IDC_SIZENS),      L"vert.png",    nullptr, true,  0.0f, 0.0f }
+    { LoadCursor(nullptr, IDC_ARROW),  L"pointer.png", nullptr, false, 4.0f, 4.0f },
+    { LoadCursor(nullptr, IDC_HAND),   L"link.png",    nullptr, false, 8.0f, 2.0f },
+    { LoadCursor(nullptr, IDC_IBEAM),  L"text.png",    nullptr, true,  0.0f, 0.0f },
+    { LoadCursor(nullptr, IDC_SIZEWE), L"horz.png",    nullptr, true,  0.0f, 0.0f },
+    { LoadCursor(nullptr, IDC_SIZENS), L"vert.png",    nullptr, true,  0.0f, 0.0f }
 };
 
-// --- Global Engine Variables ---
 ID2D1Factory* pFactory = nullptr;
 ID2D1HwndRenderTarget* pRenderTarget = nullptr;
 ID2D1SolidColorBrush* pBrush = nullptr;
@@ -44,7 +41,6 @@ float curX = 0.0f, curY = 0.0f;
 float targetX = 0.0f, targetY = 0.0f; 
 float lastAngle = 0.0f;           
 
-// Reusable texture processing pipeline
 ID2D1Bitmap* LoadTextureFromFile(const wchar_t* filename) {
     IWICImagingFactory* pWICFactory = nullptr;
     IWICBitmapDecoder* pDecoder = nullptr;
@@ -83,14 +79,26 @@ HRESULT InitD2D(HWND hwnd) {
         RECT rc;
         GetClientRect(hwnd, &rc);
         D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
-        hr = pFactory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(), D2D1::HwndRenderTargetProperties(hwnd, size), &pRenderTarget);
+        
+        D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+        );
+        
+        hr = pFactory->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hwnd, size), &pRenderTarget);
     }
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
         
-        // Loop and cache all valid PNG textures directly into high performance GPU VRAM
+        // Fail-safe asset validation loop
         for (int i = 0; i < CURSOR_COUNT; i++) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
+            if (!cursorMap[i].bitmap) {
+                wchar_t errorMsg[256];
+                wsprintfW(errorMsg, L"Missing Asset: %s\n\nPlease ensure this PNG file is located in the exact same directory as your compiled executable!", cursorMap[i].filename);
+                MessageBoxW(hwnd, errorMsg, L"Texture Load Error", MB_OK | MB_ICONERROR);
+                return E_FAIL; 
+            }
         }
     }
     return hr;
@@ -109,9 +117,8 @@ void RenderCursor(HWND hwnd) {
     if (!pRenderTarget) return;
 
     pRenderTarget->BeginDraw();
-    pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f));
+    pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f)); 
 
-    // 1. Polling System: Track and poll active kernel cursor handles
     POINT pt;
     GetCursorPos(&pt);
     ScreenToClient(hwnd, &pt);
@@ -119,26 +126,30 @@ void RenderCursor(HWND hwnd) {
     targetY = static_cast<float>(pt.y);
 
     CURSORINFO ci = { sizeof(CURSORINFO) };
-    CursorState activeCursor = cursorMap[0]; // Fallback cleanly to standard Arrow layout
+    bool foundMatchedCursor = false;
+    CursorState activeCursor;
 
-    if (GetCursorInfo(&ci)) {
+    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
         for (int i = 0; i < CURSOR_COUNT; i++) {
             if (ci.hCursor == cursorMap[i].sysHandle) {
                 activeCursor = cursorMap[i];
+                foundMatchedCursor = true;
                 break;
             }
         }
     }
 
-    // Fallback security assertion: Check if target sub-texture asset exists
-    ID2D1Bitmap* activeBitmap = activeCursor.bitmap ? activeCursor.bitmap : cursorMap[0].bitmap;
-    if (!activeBitmap) { pRenderTarget->EndDraw(); return; }
+    if (!foundMatchedCursor || !activeCursor.bitmap) {
+        curX = targetX;
+        curY = targetY;
+        pRenderTarget->EndDraw();
+        return; 
+    }
 
-    D2D1_SIZE_F size = activeBitmap->GetSize();
+    D2D1_SIZE_F size = activeCursor.bitmap->GetSize();
     float hX = activeCursor.isCenterHotspot ? (size.width / 2.0f) : activeCursor.manualHotspotX;
     float hY = activeCursor.isCenterHotspot ? (size.height / 2.0f) : activeCursor.manualHotspotY;
 
-    // 2. Physics Configuration
     float dx = targetX - curX;
     float dy = targetY - curY;
     float distance = std::sqrt(dx * dx + dy * dy);
@@ -166,7 +177,6 @@ void RenderCursor(HWND hwnd) {
     float stretchY = 1.0f / stretchX; 
     if (stretchX > 2.2f) { stretchX = 2.2f; stretchY = 1.0f / 2.2f; }
 
-    // 3. Mathematical Transformation Processing
     D2D1::Matrix3x2F transform;
     if (CURRENT_MODE == MODE_STRETCH) {
         transform = 
@@ -185,9 +195,7 @@ void RenderCursor(HWND hwnd) {
     }
 
     pRenderTarget->SetTransform(transform);
-
-    // 4. Draw Command Execution
-    pRenderTarget->DrawBitmap(activeBitmap, D2D1::RectF(0, 0, size.width, size.height));
+    pRenderTarget->DrawBitmap(activeCursor.bitmap, D2D1::RectF(0, 0, size.width, size.height));
     pRenderTarget->EndDraw();
 }
 
@@ -229,7 +237,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     if (hwnd == nullptr) { CoUninitialize(); timeEndPeriod(1); return 0; }
 
     SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
-    SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+    
+    // FIX: Tells the OS compositor to initialize the layered window composition pipeline 
+    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+    // Modern DWM Frame expansion to route alpha properties safely
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+
     RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'Q');
 
     if (FAILED(InitD2D(hwnd))) { CoUninitialize(); timeEndPeriod(1); return 0; }
