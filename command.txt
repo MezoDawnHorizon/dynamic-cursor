@@ -1,0 +1,2 @@
+g++ main.cpp -o DynamicCursor.exe -ld2d1 -luser32 -mwindows -DUNICODE -D_UNICODE
+taskkill /f /im DynamicCursor.exe 

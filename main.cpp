@@ -109,6 +109,8 @@ void RenderCursor() {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_DESTROY:
+            // Always remove window properties before the window destroys completely
+            RemovePropW(hwnd, L"NonRudeHWND");
             CleanUpD2D();
             PostQuitMessage(0);
             return 0;
@@ -126,18 +128,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // Register the Window Class
     const wchar_t CLASS_NAME[] = L"CursorOverlayClass";
     
-    WNDCLASSW wc = {}; // <-- Changed to WNDCLASSW
+    WNDCLASSW wc = {}; 
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-    RegisterClassW(&wc); // <-- Optional, but good practice to use RegisterClassW
+    RegisterClassW(&wc); 
 
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-    // Create a borderless, transparent, click-through, topmost window
-    HWND hwnd = CreateWindowExW( // <-- Changed to CreateWindowExW
-        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED, 
+    // Create a borderless, transparent, click-through, topmost overlay
+    // ADDED: WS_EX_TOOLWINDOW (hides from Alt+Tab) & WS_EX_NOACTIVATE (prevents focus stealing)
+    HWND hwnd = CreateWindowExW( 
+        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
         CLASS_NAME, L"Dynamic Cursor Overlay",
         WS_POPUP, 
         0, 0, screenWidth, screenHeight,
@@ -145,6 +148,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     );
 
     if (hwnd == nullptr) return 0;
+
+    // FIX: Tells the OS "Rude Window Manager" that this screen-sized window 
+    // is definitely not a fullscreen game, forcing the taskbar to stay on top.
+    SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
 
     // Chroma key setup: Tells Windows that pure black (RGB 0,0,0) should be invisible
     SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
