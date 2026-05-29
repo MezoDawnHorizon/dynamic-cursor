@@ -1,26 +1,28 @@
 #include <windows.h>
 #include <d2d1.h>
-#include <wincodec.h> // WIC header for handling image files
+#include <wincodec.h>
+#include <mmsystem.h> // Header for high-resolution system timers
 #include <cmath>
 
-// Link the required Windows subsystem libraries automatically
+// Link subsystem libraries automatically
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "Windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "winmm.lib") // Links the Windows Multimedia library
 
 // --- Engine Configuration Settings ---
 enum SimulationMode { MODE_STRETCH, MODE_ROTATE };
 
-const SimulationMode CURRENT_MODE = MODE_STRETCH; // Choose: MODE_STRETCH or MODE_ROTATE
-const float HOTSPOT_X = 4.0f;                     // X-offset to calibrate your cursor's true pointing tip
-const float HOTSPOT_Y = 4.0f;                     // Y-offset to calibrate your cursor's true pointing tip
-const float CURSOR_BASE_ANGLE = 45.0f;            // Rotate adjustment (Bibata naturally tilts at -45 deg)
+const SimulationMode CURRENT_MODE = MODE_STRETCH; 
+const float HOTSPOT_X = 4.0f;                     
+const float HOTSPOT_Y = 4.0f;                     
+const float CURSOR_BASE_ANGLE = 45.0f;            
 
 // --- Global Variables ---
 ID2D1Factory* pFactory = nullptr;
 ID2D1HwndRenderTarget* pRenderTarget = nullptr;
 ID2D1SolidColorBrush* pBrush = nullptr;
-ID2D1Bitmap* pCursorBitmap = nullptr;             // Holds our loaded Bibata texture
+ID2D1Bitmap* pCursorBitmap = nullptr;             
 
 // Physics States
 float curX = 0.0f, curY = 0.0f;   
@@ -34,13 +36,11 @@ void LoadCursorTexture() {
     IWICBitmapFrameDecode* pFrame = nullptr;
     IWICFormatConverter* pConverter = nullptr;
 
-    // Initialize the Windows Imaging Component Factory
     HRESULT hr = CoCreateInstance(
         CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWICFactory)
     );
     
     if (SUCCEEDED(hr)) {
-        // Attempt to open the local "cursor.png" file
         hr = pWICFactory->CreateDecoderFromFilename(
             L"cursor.png", nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &pDecoder
         );
@@ -52,17 +52,14 @@ void LoadCursorTexture() {
         hr = pWICFactory->CreateFormatConverter(&pConverter);
     }
     if (SUCCEEDED(hr)) {
-        // Force the texture data to convert into a Direct2D standard Alpha-Premultiplied format
         hr = pConverter->Initialize(
             pFrame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom
         );
     }
     if (SUCCEEDED(hr)) {
-        // Generate the high performance GPU bitmap frame
         pRenderTarget->CreateBitmapFromWicBitmap(pConverter, nullptr, &pCursorBitmap);
     }
 
-    // Safely dispose raw pipeline layers
     if (pConverter) pConverter->Release();
     if (pFrame) pFrame->Release();
     if (pDecoder) pDecoder->Release();
@@ -85,7 +82,6 @@ HRESULT InitD2D(HWND hwnd) {
     }
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
-        // Load our custom Bibata cursor asset into the renderer memory
         LoadCursorTexture();
     }
     return hr;
@@ -98,43 +94,44 @@ void CleanUpD2D() {
     if (pFactory) pFactory->Release();
 }
 
-// --- The Physics & Custom Texture Transformation Engine ---
+// --- High-Speed Render Engine ---
 void RenderCursor(HWND hwnd) {
     if (!pRenderTarget) return;
 
     pRenderTarget->BeginDraw();
     pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f));
 
-    // 1. Get real mouse coordinates
+    // 1. Get real mouse coordinates and convert to window relative space
     POINT pt;
     GetCursorPos(&pt);
     ScreenToClient(hwnd, &pt);
     targetX = static_cast<float>(pt.x);
     targetY = static_cast<float>(pt.y);
 
-    // 2. Physics: Adaptive Linear Interpolation (Lerp) for elite precision
+    // 2. Physics: Speed-Adaptive Snappy Logic
     float dx = targetX - curX;
     float dy = targetY - curY;
     float distance = std::sqrt(dx * dx + dy * dy);
 
-    // Default trailing elasticity (higher = snappier, lower = more lag)
-    float stiffness = 0.16f; 
+    // Responsive default tracking speed
+    float stiffness = 0.24f; 
 
-    // --- ADAPTIVE SNAPPING ENGINE ---
-    // If your mouse is within 2 pixels of the target, snap instantly to ensure 1:1 clicking precision.
-    if (distance < 2.0f) {
-        stiffness = 1.0f; 
-    } 
-    // If you are slowing down and within 15 pixels of a target, tighten the physics tightly
-    // so the cursor doesn't drift or overshoot your target button.
-    else if (distance < 15.0f) {
-        stiffness = 0.50f; 
+    // FIX: Dynamic acceleration thresholds. If the mouse flies across the screen, 
+    // crank up the tracking force so it stays tightly bound to your target position.
+    if (distance > 180.0f) {
+        stiffness = 0.65f; // Ultra-fast recovery for huge swipes
+    } else if (distance > 60.0f) {
+        stiffness = 0.42f; // High speed elastic pursuit
+    } else if (distance < 2.0f) {
+        stiffness = 1.0f;  // Pixel-perfect precision snap when slowing down
+    } else if (distance < 15.0f) {
+        stiffness = 0.68f; // Close-range sticky target snapping
     }
     
     curX += dx * stiffness;
     curY += dy * stiffness;
 
-    // 3. Physics: Velocity Calculations
+    // 3. Physics: Velocity Calculations for Stretch Effects
     float vx = dx * stiffness;
     float vy = dy * stiffness;
     float speed = std::sqrt(vx * vx + vy * vy);
@@ -145,18 +142,15 @@ void RenderCursor(HWND hwnd) {
         lastAngle = angle;
     }
 
-    // 4. Comic Book Squish & Stretch calculations
-    float stretchX = 1.0f + (speed * 0.035f); 
+    // Stretch modifier scaled perfectly for high-refresh polling
+    float stretchX = 1.0f + (speed * 0.025f); 
     float stretchY = 1.0f / stretchX; 
-    if (stretchX > 2.5f) { stretchX = 2.5f; stretchY = 1.0f / 2.5f; }
+    if (stretchX > 2.2f) { stretchX = 2.2f; stretchY = 1.0f / 2.2f; }
 
-    // 5. Transformation Matrix Math (Hyprland Simulation Engine Mode Routing)
+    // 4. Matrix Transformations
     D2D1::Matrix3x2F transform;
 
     if (CURRENT_MODE == MODE_STRETCH) {
-        // --- STRETCH MODE ---
-        // Matrix Sandwich trick: Moves image to origin -> tilts canvas backward to align velocity vector -> 
-        // stretches texture -> tilts canvas back forward -> places cursor at real coordinates.
         transform = 
             D2D1::Matrix3x2F::Translation(-HOTSPOT_X, -HOTSPOT_Y) *
             D2D1::Matrix3x2F::Rotation(-angle, D2D1::Point2F(0, 0)) *
@@ -165,8 +159,6 @@ void RenderCursor(HWND hwnd) {
             D2D1::Matrix3x2F::Translation(curX, curY);
     } 
     else {
-        // --- ROTATE MODE ---
-        // Dynamically forces the cursor point vector to point straight into the direction of motion.
         transform = 
             D2D1::Matrix3x2F::Translation(-HOTSPOT_X, -HOTSPOT_Y) *
             D2D1::Matrix3x2F::Scale(stretchX, stretchY, D2D1::Point2F(0, 0)) *
@@ -176,13 +168,11 @@ void RenderCursor(HWND hwnd) {
 
     pRenderTarget->SetTransform(transform);
 
-    // 6. Final Render Layer Draw
+    // 5. Final Render Draw
     if (pCursorBitmap) {
-        // If 'cursor.png' was loaded successfully, render it instantly
         D2D1_SIZE_F size = pCursorBitmap->GetSize();
         pRenderTarget->DrawBitmap(pCursorBitmap, D2D1::RectF(0, 0, size.width, size.height));
     } else {
-        // Elegant Fallback: Draw default neon vector shape if image is missing
         D2D1_ELLIPSE ellipse = D2D1::Ellipse(D2D1::Point2F(0, 0), 10.0f, 7.0f);
         pRenderTarget->FillEllipse(ellipse, pBrush);
     }
@@ -206,7 +196,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    // Initialize COM Subsystem thread for WIC Image Decoding
+    // FIX: Force Windows kernel to grant true 1-millisecond sleep precision
+    timeBeginPeriod(1);
+
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
     const wchar_t CLASS_NAME[] = L"CursorOverlayClass";
@@ -225,13 +217,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         0, 0, screenWidth, screenHeight, nullptr, nullptr, hInstance, nullptr
     );
 
-    if (hwnd == nullptr) { CoUninitialize(); return 0; }
+    if (hwnd == nullptr) { CoUninitialize(); timeEndPeriod(1); return 0; }
 
     SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
     SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
     RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'Q');
 
-    if (FAILED(InitD2D(hwnd))) { CoUninitialize(); return 0; }
+    if (FAILED(InitD2D(hwnd))) { CoUninitialize(); timeEndPeriod(1); return 0; }
 
     ShowWindow(hwnd, nCmdShow);
 
@@ -242,10 +234,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             DispatchMessage(&msg);
         } else {
             RenderCursor(hwnd);
+            // Now sleeps for a precise 1ms block instead of a lagging 15.6ms block
             Sleep(1); 
         }
     }
 
     CoUninitialize();
+    
+    // Release the 1ms OS timer override safely on close
+    timeEndPeriod(1); 
     return 0;
 }
