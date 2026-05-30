@@ -12,7 +12,7 @@ The overlay includes two unique physics simulation modes toggled via the system 
 
 | Stretch Animation Mode | Rotate Animation Mode |
 | :---: | :---: |
-| ![](assets/Stretch.mp4) | ![](assets/Rotate.mp4) |
+| <img src="assets/Stretch.gif" width="380" alt="Stretch Mode"> | <img src="assets/Rotate.gif" width="380" alt="Rotate Mode"> |
 
 ---
 
