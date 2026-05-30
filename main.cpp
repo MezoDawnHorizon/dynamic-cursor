@@ -3,6 +3,7 @@
 #include <wincodec.h>
 #include <dwmapi.h> 
 #include <mmsystem.h>
+#include <shellapi.h> // Required for System Tray Notification Area APIs
 #include <cmath>
 
 #pragma comment(lib, "d2d1.lib")
@@ -10,6 +11,11 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "shell32.lib")
+
+// Custom Window Message for Tray Icon Events
+#define WM_TRAYICON (WM_USER + 1)
+#define ID_TRAY_EXIT 1001
 
 enum SimulationMode { MODE_STRETCH, MODE_ROTATE };
 const SimulationMode CURRENT_MODE = MODE_STRETCH; 
@@ -40,6 +46,8 @@ ID2D1SolidColorBrush* pBrush = nullptr;
 float curX = 0.0f, curY = 0.0f;   
 float targetX = 0.0f, targetY = 0.0f; 
 float lastAngle = 0.0f;           
+
+NOTIFYICONDATAW nid = {}; // System tray registration data structure
 
 ID2D1Bitmap* LoadTextureFromFile(const wchar_t* filename) {
     IWICImagingFactory* pWICFactory = nullptr;
@@ -90,7 +98,6 @@ HRESULT InitD2D(HWND hwnd) {
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
         
-        // Fail-safe asset validation loop
         for (int i = 0; i < CURSOR_COUNT; i++) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
             if (!cursorMap[i].bitmap) {
@@ -201,10 +208,39 @@ void RenderCursor(HWND hwnd) {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
+        case WM_TRAYICON:
+            // Detect when user right-clicks the System Tray Icon
+            if (lParam == WM_RBUTTONUP) {
+                POINT curPoint;
+                GetCursorPos(&curPoint);
+                
+                HMENU hMenu = CreatePopupMenu();
+                if (hMenu) {
+                    AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit Cursor Overlay");
+                    
+                    // Win32 design requirement to pass focus properly to context popup menus
+                    SetForegroundWindow(hwnd);
+                    
+                    TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
+                    DestroyMenu(hMenu);
+                }
+            }
+            return 0;
+
+        case WM_COMMAND:
+            // Handle actions triggered from tray menu item selections
+            if (LOWORD(wParam) == ID_TRAY_EXIT) {
+                DestroyWindow(hwnd);
+            }
+            return 0;
+
         case WM_HOTKEY:
             if (wParam == 1) DestroyWindow(hwnd);
             return 0;
+
         case WM_DESTROY:
+            // Remove the Tray Icon when application closes
+            Shell_NotifyIconW(NIM_DELETE, &nid);
             UnregisterHotKey(hwnd, 1);
             RemovePropW(hwnd, L"NonRudeHWND");
             CleanUpD2D();
@@ -215,6 +251,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    SetProcessDPIAware();
     timeBeginPeriod(1);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -225,29 +262,39 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     wc.lpszClassName = CLASS_NAME;
     RegisterClassW(&wc); 
 
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    int virtualLeft   = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int virtualTop    = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int virtualWidth  = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int virtualHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     HWND hwnd = CreateWindowExW( 
         WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
         CLASS_NAME, L"Dynamic Cursor Overlay", WS_POPUP, 
-        0, 0, screenWidth, screenHeight, nullptr, nullptr, hInstance, nullptr
+        virtualLeft, virtualTop, virtualWidth, virtualHeight, nullptr, nullptr, hInstance, nullptr
     );
 
     if (hwnd == nullptr) { CoUninitialize(); timeEndPeriod(1); return 0; }
 
     SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
-    
-    // FIX: Tells the OS compositor to initialize the layered window composition pipeline 
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
 
-    // Modern DWM Frame expansion to route alpha properties safely
     MARGINS margins = {-1, -1, -1, -1};
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
     RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'Q');
 
     if (FAILED(InitD2D(hwnd))) { CoUninitialize(); timeEndPeriod(1); return 0; }
+
+    // --- Configure and Register System Tray Icon ---
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION); // Loads default standard generic application icon
+    wcscpy_s(nid.szTip, L"Dynamic Cursor Overlay");
+    Shell_NotifyIconW(NIM_ADD, &nid);
+    // -----------------------------------------------
 
     ShowWindow(hwnd, nCmdShow);
 
