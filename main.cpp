@@ -4,6 +4,7 @@
 #include <dwmapi.h> 
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <cmath>
 #include <string>
 
@@ -13,12 +14,18 @@
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "comdlg32.lib")
 
-#define WM_TRAYICON (WM_USER + 1)
+#define WM_TRAYICON           (WM_USER + 1)
 #define ID_TRAY_EXIT          1001
 #define ID_TRAY_RELOAD        1002
 #define ID_TRAY_MODE_STRETCH  1003
 #define ID_TRAY_MODE_ROTATE   1004
+#define ID_TRAY_SETTINGS      1005
+
+#define IDC_COMBO_CURSOR      2001
+#define IDC_BTN_BROWSE        2002
+
 #define TIMER_RENDER_MENU     1
 
 enum SimulationMode { MODE_STRETCH = 0, MODE_ROTATE = 1 };
@@ -45,11 +52,11 @@ struct CursorState {
 
 const int CURSOR_COUNT = 5;
 CursorState cursorMap[CURSOR_COUNT] = {
-    { LoadCursor(nullptr, IDC_ARROW),  L"pointer.png", nullptr, false, 4.0f, 4.0f, 135.0f, true  },
-    { LoadCursor(nullptr, IDC_HAND),   L"link.png",    nullptr, false, 8.0f, 2.0f, 135.0f, true  },
-    { LoadCursor(nullptr, IDC_IBEAM),  L"text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }, 
-    { LoadCursor(nullptr, IDC_SIZEWE), L"horz.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false },
-    { LoadCursor(nullptr, IDC_SIZENS), L"vert.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }
+    { LoadCursor(nullptr, IDC_ARROW),  L".\\config\\pointer.png", nullptr, false, 4.0f, 4.0f, 135.0f, true  },
+    { LoadCursor(nullptr, IDC_HAND),   L".\\config\\link.png",    nullptr, false, 8.0f, 2.0f, 135.0f, true  },
+    { LoadCursor(nullptr, IDC_IBEAM),  L".\\config\\text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }, 
+    { LoadCursor(nullptr, IDC_SIZEWE), L".\\config\\horz.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false },
+    { LoadCursor(nullptr, IDC_SIZENS), L".\\config\\vert.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }
 };
 
 ID2D1Factory* pFactory = nullptr;
@@ -60,6 +67,7 @@ float curX = 0.0f, curY = 0.0f;
 float targetX = 0.0f, targetY = 0.0f; 
 float lastAngle = 0.0f;           
 
+HWND g_hwndSettings = nullptr; 
 NOTIFYICONDATAW nid = {}; 
 const wchar_t* CONFIG_DIR  = L"config";
 const wchar_t* CONFIG_FILE = L".\\config\\settings.ini";
@@ -129,6 +137,15 @@ ID2D1Bitmap* LoadTextureFromFile(const wchar_t* filename) {
     return pBitmap;
 }
 
+void ReloadCursorTexture(int index) {
+    if (index < 0 || index >= CURSOR_COUNT) return;
+    if (cursorMap[index].bitmap) {
+        cursorMap[index].bitmap->Release();
+        cursorMap[index].bitmap = nullptr;
+    }
+    cursorMap[index].bitmap = LoadTextureFromFile(cursorMap[index].filename);
+}
+
 HRESULT InitD2D(HWND hwnd) {
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pFactory);
     if (SUCCEEDED(hr)) {
@@ -146,14 +163,9 @@ HRESULT InitD2D(HWND hwnd) {
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
         
+        // Cold start texture allocation. If files don't exist yet, we keep running without throwing a fatal crash.
         for (int i = 0; i < CURSOR_COUNT; i++) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
-            if (!cursorMap[i].bitmap) {
-                wchar_t errorMsg[256];
-                wsprintfW(errorMsg, L"Missing Asset: %s\n\nPlease verify file layout.", cursorMap[i].filename);
-                MessageBoxW(hwnd, errorMsg, L"Asset Read Error", MB_OK | MB_ICONERROR);
-                return E_FAIL; 
-            }
         }
     }
     return hr;
@@ -171,7 +183,6 @@ void CleanUpD2D() {
 void RenderCursor(HWND hwnd) {
     if (!pRenderTarget) return;
 
-    // Force our overlay to assert dominance over aggressive context menus
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     pRenderTarget->BeginDraw();
@@ -198,8 +209,6 @@ void RenderCursor(HWND hwnd) {
                     break;
                 }
             }
-            
-            // Fallback to custom pointer instead of vanishing on unknown types
             if (!foundMatchedCursor) {
                 activeCursor = cursorMap[0]; 
                 foundMatchedCursor = true;
@@ -271,9 +280,101 @@ void RenderCursor(HWND hwnd) {
     pRenderTarget->SetTransform(transform);
     pRenderTarget->DrawBitmap(activeCursor.bitmap, D2D1::RectF(0, 0, size.width, size.height));
     pRenderTarget->EndDraw();
-
-    // Flushes render queue and limits execution rate perfectly to the display monitor refresh rate
     DwmFlush(); 
+}
+
+// Ingest processing routine shared by Drag & Drop and Browse button functions
+void ProcessImportedFile(HWND hwndSettings, const wchar_t* sourcePath) {
+    HWND hwndCombo = GetDlgItem(hwndSettings, IDC_COMBO_CURSOR);
+    int targetIndex = static_cast<int>(SendMessageW(hwndCombo, CB_GETCURSEL, 0, 0));
+    
+    if (targetIndex == CB_ERR) {
+        MessageBoxW(hwndSettings, L"Please select a target cursor type first!", L"Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    CreateDirectoryW(CONFIG_DIR, nullptr);
+
+    // Forces copying and overriding the target file format mapping on disk
+    if (CopyFileW(sourcePath, cursorMap[targetIndex].filename, FALSE)) {
+        ReloadCursorTexture(targetIndex);
+        MessageBoxW(hwndSettings, L"Texture applied and updated on-the-fly successfully!", L"Success", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxW(hwndSettings, L"Failed to write image to target destination.", L"I/O Error", MB_OK | MB_ICONERROR);
+    }
+}
+
+// Window Procedure handling configuration window lifecycle
+LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+        case WM_CREATE: {
+            // Setup Native Child Components
+            CreateWindowExW(0, L"STATIC", L"1. Select Target Cursor Asset Type:", WS_CHILD | WS_VISIBLE, 
+                            20, 20, 340, 20, hwnd, nullptr, nullptr, nullptr);
+
+            HWND hwndCombo = CreateWindowExW(0, L"COMBOBOX", nullptr, 
+                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 
+                                            20, 45, 340, 200, hwnd, reinterpret_cast<HMENU>(IDC_COMBO_CURSOR), nullptr, nullptr);
+            
+            SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Default Arrow (pointer.png)"));
+            SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Link Hand (link.png)"));
+            SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Text I-Beam (text.png)"));
+            SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Horizontal Scale (horz.png)"));
+            SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Vertical Scale (vert.png)"));
+            SendMessageW(hwndCombo, CB_SETCURSEL, 0, 0);
+
+            CreateWindowExW(0, L"STATIC", L"2. Load Image File Configuration:", WS_CHILD | WS_VISIBLE, 
+                            20, 95, 340, 20, hwnd, nullptr, nullptr, nullptr);
+
+            CreateWindowExW(0, L"BUTTON", L"Browse System PNG...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 
+                            20, 120, 160, 30, hwnd, reinterpret_cast<HMENU>(IDC_BTN_BROWSE), nullptr, nullptr);
+
+            CreateWindowExW(0, L"STATIC", L"💡 Interaction Tip:\nYou can drag and drop your custom .png image file directly anywhere onto this UI surface area.", 
+                            WS_CHILD | WS_VISIBLE, 20, 170, 340, 50, hwnd, nullptr, nullptr, nullptr);
+
+            DragAcceptFiles(hwnd, TRUE); // Tell Shell Manager this container accepts drops
+            return 0;
+        }
+
+        case WM_DROPFILES: {
+            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
+            wchar_t droppedPath[MAX_PATH];
+            
+            if (DragQueryFileW(hDrop, 0, droppedPath, MAX_PATH)) {
+                ProcessImportedFile(hwnd, droppedPath);
+            }
+            DragFinish(hDrop);
+            return 0;
+        }
+
+        case WM_COMMAND: {
+            if (LOWORD(wParam) == IDC_BTN_BROWSE) {
+                OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
+                wchar_t selectedPath[MAX_PATH] = { 0 };
+                
+                ofn.hwndOwner = hwnd;
+                ofn.lpstrFile = selectedPath;
+                ofn.nMaxFile = MAX_PATH;
+                ofn.lpstrFilter = L"Portable Network Graphics (*.png)\0*.png\0";
+                ofn.nFilterIndex = 1;
+                ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+                
+                if (GetOpenFileNameW(&ofn)) {
+                    ProcessImportedFile(hwnd, selectedPath);
+                }
+            }
+            return 0;
+        }
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+
+        case WM_DESTROY:
+            g_hwndSettings = nullptr; 
+            return 0;
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -283,11 +384,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 POINT curPoint;
                 GetCursorPos(&curPoint);
                 
-                // 1. Fire up a fast window timer to drive RenderCursor while TrackPopupMenu blocks WinMain
                 SetTimer(hwnd, TIMER_RENDER_MENU, 10, nullptr);
 
                 HMENU hMenu = CreatePopupMenu();
                 if (hMenu) {
+                    AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Open Settings GUI...");
+                    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
                     AppendMenuW(hMenu, g_Config.currentMode == MODE_STRETCH ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_MODE_STRETCH, L"Stretch Animation Mode");
                     AppendMenuW(hMenu, g_Config.currentMode == MODE_ROTATE ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_MODE_ROTATE, L"Rotate Animation Mode");
                     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -300,21 +402,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DestroyMenu(hMenu);
                 }
 
-                // 2. Kill the timer immediately once the context menu closes and normal execution returns
                 KillTimer(hwnd, TIMER_RENDER_MENU);
             }
             return 0;
 
         case WM_TIMER:
             if (wParam == TIMER_RENDER_MENU) {
-                // Windows feeds us these messages inside its own modal loops!
                 RenderCursor(hwnd);
             }
             return 0;
 
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
+                case ID_TRAY_SETTINGS:
+                    if (!g_hwndSettings) {
+                        g_hwndSettings = CreateWindowExW(
+                            0, L"CursorSettingsClass", L"Cursor Overlay Settings Engine",
+                            WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX),
+                            CW_USEDEFAULT, CW_USEDEFAULT, 400, 270,
+                            nullptr, nullptr, GetModuleHandle(nullptr), nullptr
+                        );
+                        ShowWindow(g_hwndSettings, SW_SHOW);
+                    } else {
+                        SetForegroundWindow(g_hwndSettings);
+                    }
+                    break;
                 case ID_TRAY_EXIT:
+                    if (g_hwndSettings) DestroyWindow(g_hwndSettings);
                     DestroyWindow(hwnd);
                     break;
                 case ID_TRAY_RELOAD:
@@ -330,7 +444,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_HOTKEY:
-            if (wParam == 1) DestroyWindow(hwnd);
+            if (wParam == 1) {
+                if (g_hwndSettings) DestroyWindow(g_hwndSettings);
+                DestroyWindow(hwnd);
+            }
             return 0;
 
         case WM_DESTROY:
@@ -350,6 +467,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     timeBeginPeriod(1);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+    // Register UI Class Configuration
+    WNDCLASSW settingsWc = {};
+    settingsWc.lpfnWndProc = SettingsWndProc;
+    settingsWc.hInstance = hInstance;
+    settingsWc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    settingsWc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    settingsWc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    settingsWc.lpszClassName = L"CursorSettingsClass";
+    RegisterClassW(&settingsWc);
+
+    // Register Overlay Window Class
     const wchar_t CLASS_NAME[] = L"CursorOverlayClass";
     WNDCLASSW wc = {}; 
     wc.lpfnWndProc = WndProc;
@@ -397,7 +525,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            RenderCursor(hwnd); // Normal state loop
+            RenderCursor(hwnd); 
         }
     }
 
