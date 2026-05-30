@@ -244,14 +244,13 @@ void RenderCursor(HWND hwnd) {
                     break;
                 }
             }
-            if (!foundMatchedCursor) {
-                activeCursor = cursorMap[0]; 
-                foundMatchedCursor = true;
-            }
+            // FIX: Removed the old fallback block that forced unmapped cursors to use pointer.png
         }
     }
 
-    if (!cursorIsShowing || !activeCursor.bitmap) {
+    // If the cursor is hidden, or if it's an unmapped system cursor (like waiting, processing, or not-allowed),
+    // we seamlessly skip drawing the overlay so the native Windows cursor is perfectly legible.
+    if (!cursorIsShowing || !foundMatchedCursor || !activeCursor.bitmap) {
         curX = targetX;
         curY = targetY;
         pRenderTarget->EndDraw();

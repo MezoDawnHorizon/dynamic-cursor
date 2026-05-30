@@ -1,4 +1,3 @@
-g++ main.cpp -o DynamicCursor.exe -ld2d1 -ldwmapi -luser32 -lwindowscodecs -lole32 -lwinmm -lshell32 -lcomdlg32 -mwindows -DUNICODE -D_UNICODE
 g++ main.cpp resource.o -o DynamicCursor.exe -ld2d1 -ldwmapi -luser32 -lwindowscodecs -lole32 -lwinmm -lshell32 -lcomdlg32 -mwindows -DUNICODE -D_UNICODE
 taskkill /f /im DynamicCursor.exe 
 ctrl alt q # to close the app

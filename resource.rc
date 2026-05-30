@@ -15,7 +15,7 @@ BEGIN
         BLOCK "040904b0" // Language: US English (0x0409), Character Set: Unicode (1200 / 0x04b0)
         BEGIN
             VALUE "CompanyName",      "MezoDawnHorizon"
-            VALUE "FileDescription",  "Dynamic Cursor Overlay"
+            VALUE "FileDescription",  "Dynamic Cursor"
             VALUE "FileVersion",      "1.0.0.0"
             VALUE "InternalName",     "DynamicCursor"
             VALUE "LegalCopyright",   "Copyright (C) 2026"
