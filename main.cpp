@@ -15,8 +15,6 @@
 #pragma comment(lib, "shell32.lib")
 
 #define WM_TRAYICON (WM_USER + 1)
-
-// Unique identifiers for customizable Tray Actions
 #define ID_TRAY_EXIT          1001
 #define ID_TRAY_RELOAD        1002
 #define ID_TRAY_MODE_STRETCH  1003
@@ -24,7 +22,6 @@
 
 enum SimulationMode { MODE_STRETCH = 0, MODE_ROTATE = 1 };
 
-// Mutable runtime physics values populated dynamically by configuration parameters
 struct RuntimeConfig {
     SimulationMode currentMode = MODE_STRETCH;
     float stiffnessFar         = 0.65f;
@@ -41,15 +38,18 @@ struct CursorState {
     bool isCenterHotspot;       
     float manualHotspotX;       
     float manualHotspotY;       
+    float baseAngle;      // Rotational correction to make the asset tip face 0° (Right)
+    bool allowRotation;   // Keeps utility icons clean/un-flipped during rotation modes
 };
 
 const int CURSOR_COUNT = 5;
 CursorState cursorMap[CURSOR_COUNT] = {
-    { LoadCursor(nullptr, IDC_ARROW),  L"pointer.png", nullptr, false, 4.0f, 4.0f },
-    { LoadCursor(nullptr, IDC_HAND),   L"link.png",    nullptr, false, 8.0f, 2.0f },
-    { LoadCursor(nullptr, IDC_IBEAM),  L"text.png",    nullptr, true,  0.0f, 0.0f },
-    { LoadCursor(nullptr, IDC_SIZEWE), L"horz.png",    nullptr, true,  0.0f, 0.0f },
-    { LoadCursor(nullptr, IDC_SIZENS), L"vert.png",    nullptr, true,  0.0f, 0.0f }
+    // Standard cursors naturally point up-left (-135°). Rotating by +135° brings their vector to 0° (Right)
+    { LoadCursor(nullptr, IDC_ARROW),  L"pointer.png", nullptr, false, 4.0f, 4.0f, 135.0f, true  },
+    { LoadCursor(nullptr, IDC_HAND),   L"link.png",    nullptr, false, 8.0f, 2.0f, 135.0f, true  },
+    { LoadCursor(nullptr, IDC_IBEAM),  L"text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }, 
+    { LoadCursor(nullptr, IDC_SIZEWE), L"horz.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false },
+    { LoadCursor(nullptr, IDC_SIZENS), L"vert.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }
 };
 
 ID2D1Factory* pFactory = nullptr;
@@ -59,15 +59,11 @@ ID2D1SolidColorBrush* pBrush = nullptr;
 float curX = 0.0f, curY = 0.0f;   
 float targetX = 0.0f, targetY = 0.0f; 
 float lastAngle = 0.0f;           
-const float CURSOR_BASE_ANGLE = 45.0f;
 
 NOTIFYICONDATAW nid = {}; 
-
-// Path targeting configurations
 const wchar_t* CONFIG_DIR  = L"config";
 const wchar_t* CONFIG_FILE = L".\\config\\settings.ini";
 
-// Helper routine to safely parse floating points using native Win32 INI reads
 float GetINIFloat(const wchar_t* section, const wchar_t* key, float defaultValue, const wchar_t* filePath) {
     wchar_t buf[64];
     GetPrivateProfileStringW(section, key, std::to_wstring(defaultValue).c_str(), buf, 64, filePath);
@@ -75,14 +71,10 @@ float GetINIFloat(const wchar_t* section, const wchar_t* key, float defaultValue
 }
 
 void LoadOrWriteConfig() {
-    // Gracefully handle absolute directory generation if missing
     CreateDirectoryW(CONFIG_DIR, nullptr);
-
-    // If the configuration file doesn't exist, serialize an annotated template immediately
     HANDLE hFile = CreateFileW(CONFIG_FILE, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
-        // Build out clean default values inside the INI
-        WritePrivateProfileStringW(L"Physics", L"SimulationMode", L"0", CONFIG_FILE); // 0 = Stretch, 1 = Rotate
+        WritePrivateProfileStringW(L"Physics", L"SimulationMode", L"0", CONFIG_FILE);
         WritePrivateProfileStringW(L"Physics", L"StiffnessFar",    L"0.65", CONFIG_FILE);
         WritePrivateProfileStringW(L"Physics", L"StiffnessMedium", L"0.42", CONFIG_FILE);
         WritePrivateProfileStringW(L"Physics", L"StiffnessClose",  L"0.24", CONFIG_FILE);
@@ -92,7 +84,6 @@ void LoadOrWriteConfig() {
         CloseHandle(hFile);
     }
 
-    // Populate global configuration state
     g_Config.currentMode     = static_cast<SimulationMode>(GetPrivateProfileIntW(L"Physics", L"SimulationMode", 0, CONFIG_FILE));
     g_Config.stiffnessFar    = GetINIFloat(L"Physics", L"StiffnessFar", 0.65f, CONFIG_FILE);
     g_Config.stiffnessMedium = GetINIFloat(L"Physics", L"StiffnessMedium", 0.42f, CONFIG_FILE);
@@ -159,7 +150,7 @@ HRESULT InitD2D(HWND hwnd) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
             if (!cursorMap[i].bitmap) {
                 wchar_t errorMsg[256];
-                wsprintfW(errorMsg, L"Missing Asset: %s\n\nPlease verify file execution layout context matching binary targets.", cursorMap[i].filename);
+                wsprintfW(errorMsg, L"Missing Asset: %s\n\nPlease verify file layout.", cursorMap[i].filename);
                 MessageBoxW(hwnd, errorMsg, L"Asset Read Error", MB_OK | MB_ICONERROR);
                 return E_FAIL; 
             }
@@ -218,12 +209,11 @@ void RenderCursor(HWND hwnd) {
     float dy = targetY - curY;
     float distance = std::sqrt(dx * dx + dy * dy);
 
-    // Apply mutable configuration parameters dynamically
     float stiffness = g_Config.stiffnessClose; 
     if (distance > 180.0f)      stiffness = g_Config.stiffnessFar; 
     else if (distance > 60.0f)  stiffness = g_Config.stiffnessMedium; 
     else if (distance < 2.0f)   stiffness = 1.0f;  
-    else if (distance < 15.0f)  stiffness = g_Config.stiffnessClose * 2.833f; // Scaling lower bounds
+    else if (distance < 15.0f)  stiffness = g_Config.stiffnessClose * 2.833f; 
     
     curX += dx * stiffness;
     curY += dy * stiffness;
@@ -246,7 +236,9 @@ void RenderCursor(HWND hwnd) {
     }
 
     D2D1::Matrix3x2F transform;
-    if (g_Config.currentMode == MODE_STRETCH) {
+    
+    // Check if the current mode is classic stretch OR if this utility cursor shouldn't spin
+    if (g_Config.currentMode == MODE_STRETCH || !activeCursor.allowRotation) {
         transform = 
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
             D2D1::Matrix3x2F::Rotation(-angle, D2D1::Point2F(0, 0)) *
@@ -255,10 +247,13 @@ void RenderCursor(HWND hwnd) {
             D2D1::Matrix3x2F::Translation(curX, curY);
     } 
     else {
+        // Corrected Rotation Pipeline: 
+        // 1. Hotspot to Origin -> 2. Asset Correction (Tip to 0°) -> 3. Linear Stretch -> 4. Velocity Rotation -> 5. Placement
         transform = 
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
+            D2D1::Matrix3x2F::Rotation(activeCursor.baseAngle, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Scale(stretchX, stretchY, D2D1::Point2F(0, 0)) *
-            D2D1::Matrix3x2F::Rotation(angle + CURSOR_BASE_ANGLE, D2D1::Point2F(0, 0)) *
+            D2D1::Matrix3x2F::Rotation(angle, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Translation(curX, curY);
     }
 
@@ -276,7 +271,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 
                 HMENU hMenu = CreatePopupMenu();
                 if (hMenu) {
-                    // Enhanced Tray Menu Construction with radio checks and hot reloads
                     AppendMenuW(hMenu, g_Config.currentMode == MODE_STRETCH ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_MODE_STRETCH, L"Stretch Animation Mode");
                     AppendMenuW(hMenu, g_Config.currentMode == MODE_ROTATE ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_MODE_ROTATE, L"Rotate Animation Mode");
                     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -297,7 +291,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     DestroyWindow(hwnd);
                     break;
                 case ID_TRAY_RELOAD:
-                    LoadOrWriteConfig(); // Live hot reload parsing values over runtime without crashing
+                    LoadOrWriteConfig();
                     break;
                 case ID_TRAY_MODE_STRETCH:
                     UpdateINIMode(MODE_STRETCH);
@@ -325,10 +319,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     SetProcessDPIAware();
-    
-    // Process initial configuration extraction
     LoadOrWriteConfig();
-
     timeBeginPeriod(1);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -380,7 +371,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             DispatchMessage(&msg);
         } else {
             RenderCursor(hwnd);
-            DwmFlush(); // Synced tracking directly to display engine frame timing steps
+            DwmFlush(); // Perfect frame rate pacing synced to monitor refresh intervals
         }
     }
 
