@@ -8,11 +8,11 @@ This project is inspired by [VirtCode/hypr-dynamic-cursors](https://github.com/V
 
 ## Simulation modes
 
-The overlay includes two unique physics simulation modes toggled via the system tray. (if you were wandering the cursor shown are the Bibata Cursor)
+The overlay includes two unique physics simulation modes toggled via the system tray. (The cursors shown below are the Bibata Cursor set).
 
 | Stretch Animation Mode | Rotate Animation Mode |
 | :---: | :---: |
-| `<video src="assets/Stretch.mp4" width="350" controls mute loop></video>` | `<video src="assets/Rotate.mp4" width="350" controls mute loop></video>` |
+| <video src="assets/Stretch.mp4" controls muted loop></video> | <video src="assets/Rotate.mp4" controls muted loop></video> |
 
 ---
 
