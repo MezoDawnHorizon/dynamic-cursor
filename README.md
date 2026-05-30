@@ -25,7 +25,7 @@ The overlay includes two unique physics simulation modes toggled via the system 
 
 ---
 
-## ⚙️ Configuration (`settings.ini`)
+## Configuration (`settings.ini`)
 
 On initialization, the app creates a config folder containing a default `settings.ini` profile to modify physics attributes:
 
@@ -37,3 +37,16 @@ StiffnessMedium=0.42; How fast cursor catches up during normal movement (0=slow,
 StiffnessClose=0.24 ; How smooth cursor feels for small, precise movements (lower = smoother)
 StretchFactor=0.025 ; How much the cursor stretches when moving (higher = more stretch)
 MaxStretch=2.2      ; Maximum how far the cursor can stretch (prevents extreme distortion)
+```
+
+---
+
+## Setting Up a Cursor Pack
+
+To use this app with custom cursors, you need to create a cursor pack in Windows Control Panel:
+
+1. **Create a Cursor Pack:** Open Windows Control Panel and navigate to `Devices` → `Mouse` → `Pointers` tab
+2. **Set All Cursors to Invisible:** Change all cursor schemes to use the `invisible-cursor.cur` [file](ttps://github.com/nobled/clutter/blob/master/clutter/win32/invisible-cursor.cur)
+3. **Apply the Pack:** Apply the cursor pack to replace your system cursors
+
+This allows the Dynamic Cursor overlay to display the animated cursors without interference from the default Windows cursor. The invisible cursor file is based on [nobled/clutter](https://github.com/nobled/clutter/blob/master/clutter/win32/invisible-cursor.cur)
