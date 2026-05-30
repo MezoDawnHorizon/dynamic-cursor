@@ -26,7 +26,7 @@
 #define IDC_COMBO_CURSOR      2001
 #define IDC_BTN_BROWSE        2002
 
-#define TIMER_RENDER_MENU     1
+#define TIMER_RENDER_LOOP     1
 
 enum SimulationMode { MODE_STRETCH = 0, MODE_ROTATE = 1 };
 
@@ -105,34 +105,70 @@ void UpdateINIMode(SimulationMode mode) {
     WritePrivateProfileStringW(L"Physics", L"SimulationMode", std::to_wstring(static_cast<int>(mode)).c_str(), CONFIG_FILE);
 }
 
+// Loads asset cleanly from memory to ensure zero filesystem lockups
 ID2D1Bitmap* LoadTextureFromFile(const wchar_t* filename) {
     IWICImagingFactory* pWICFactory = nullptr;
     IWICBitmapDecoder* pDecoder = nullptr;
     IWICBitmapFrameDecode* pFrame = nullptr;
     IWICFormatConverter* pConverter = nullptr;
     ID2D1Bitmap* pBitmap = nullptr;
+    IStream* pStream = nullptr;
 
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWICFactory));
-    if (SUCCEEDED(hr)) {
-        hr = pWICFactory->CreateDecoderFromFilename(filename, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &pDecoder);
-    }
-    if (SUCCEEDED(hr)) {
-        hr = pDecoder->GetFrame(0, &pFrame);
-    }
-    if (SUCCEEDED(hr)) {
-        pWICFactory->CreateFormatConverter(&pConverter);
-    }
-    if (SUCCEEDED(hr)) {
-        hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom);
-    }
-    if (SUCCEEDED(hr)) {
-        pRenderTarget->CreateBitmapFromWicBitmap(pConverter, nullptr, &pBitmap);
+    // Open file using total sharing modes to never trigger locking issues
+    HANDLE hFile = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return nullptr;
+
+    DWORD fileSize = GetFileSize(hFile, nullptr);
+    if (fileSize == INVALID_FILE_SIZE || fileSize == 0) {
+        CloseHandle(hFile);
+        return nullptr;
     }
 
-    if (pConverter) pConverter->Release();
-    if (pFrame) pFrame->Release();
-    if (pDecoder) pDecoder->Release();
-    if (pWICFactory) pWICFactory->Release();
+    HGLOBAL hGlobal = GlobalAlloc(GMEM_MOVEABLE, fileSize);
+    if (!hGlobal) {
+        CloseHandle(hFile);
+        return nullptr;
+    }
+
+    void* pData = GlobalLock(hGlobal);
+    DWORD bytesRead = 0;
+    if (pData) {
+        ReadFile(hFile, pData, fileSize, &bytesRead, nullptr);
+        GlobalUnlock(hGlobal);
+    }
+    CloseHandle(hFile);
+
+    if (bytesRead != fileSize) {
+        GlobalFree(hGlobal);
+        return nullptr;
+    }
+
+    // Convert the allocated buffer into an active COM memory stream pipeline
+    if (SUCCEEDED(CreateStreamOnHGlobal(hGlobal, TRUE, &pStream))) {
+        HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pWICFactory));
+        if (SUCCEEDED(hr)) {
+            hr = pWICFactory->CreateDecoderFromStream(pStream, nullptr, WICDecodeMetadataCacheOnLoad, &pDecoder);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = pDecoder->GetFrame(0, &pFrame);
+        }
+        if (SUCCEEDED(hr)) {
+            pWICFactory->CreateFormatConverter(&pConverter);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = pConverter->Initialize(pFrame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0f, WICBitmapPaletteTypeCustom);
+        }
+        if (SUCCEEDED(hr) && pRenderTarget) {
+            pRenderTarget->CreateBitmapFromWicBitmap(pConverter, nullptr, &pBitmap);
+        }
+
+        if (pConverter) pConverter->Release();
+        if (pFrame) pFrame->Release();
+        if (pDecoder) pDecoder->Release();
+        if (pWICFactory) pWICFactory->Release();
+        pStream->Release(); // Automatically frees underlying HGLOBAL allocation context cleanly
+    }
 
     return pBitmap;
 }
@@ -163,7 +199,6 @@ HRESULT InitD2D(HWND hwnd) {
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
         
-        // Cold start texture allocation. If files don't exist yet, we keep running without throwing a fatal crash.
         for (int i = 0; i < CURSOR_COUNT; i++) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
         }
@@ -283,7 +318,6 @@ void RenderCursor(HWND hwnd) {
     DwmFlush(); 
 }
 
-// Ingest processing routine shared by Drag & Drop and Browse button functions
 void ProcessImportedFile(HWND hwndSettings, const wchar_t* sourcePath) {
     HWND hwndCombo = GetDlgItem(hwndSettings, IDC_COMBO_CURSOR);
     int targetIndex = static_cast<int>(SendMessageW(hwndCombo, CB_GETCURSEL, 0, 0));
@@ -295,20 +329,21 @@ void ProcessImportedFile(HWND hwndSettings, const wchar_t* sourcePath) {
 
     CreateDirectoryW(CONFIG_DIR, nullptr);
 
-    // Forces copying and overriding the target file format mapping on disk
+    // Copies and renames incoming configuration profiles automatically
     if (CopyFileW(sourcePath, cursorMap[targetIndex].filename, FALSE)) {
         ReloadCursorTexture(targetIndex);
         MessageBoxW(hwndSettings, L"Texture applied and updated on-the-fly successfully!", L"Success", MB_OK | MB_ICONINFORMATION);
     } else {
-        MessageBoxW(hwndSettings, L"Failed to write image to target destination.", L"I/O Error", MB_OK | MB_ICONERROR);
+        DWORD errorId = GetLastError();
+        wchar_t errorMsg[256];
+        swprintf_s(errorMsg, L"Failed to copy file. Error Code: %lu", errorId);
+        MessageBoxW(hwndSettings, errorMsg, L"I/O Error", MB_OK | MB_ICONERROR);
     }
 }
 
-// Window Procedure handling configuration window lifecycle
 LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
         case WM_CREATE: {
-            // Setup Native Child Components
             CreateWindowExW(0, L"STATIC", L"1. Select Target Cursor Asset Type:", WS_CHILD | WS_VISIBLE, 
                             20, 20, 340, 20, hwnd, nullptr, nullptr, nullptr);
 
@@ -332,7 +367,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             CreateWindowExW(0, L"STATIC", L"💡 Interaction Tip:\nYou can drag and drop your custom .png image file directly anywhere onto this UI surface area.", 
                             WS_CHILD | WS_VISIBLE, 20, 170, 340, 50, hwnd, nullptr, nullptr, nullptr);
 
-            DragAcceptFiles(hwnd, TRUE); // Tell Shell Manager this container accepts drops
+            DragAcceptFiles(hwnd, TRUE); 
             return 0;
         }
 
@@ -384,8 +419,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 POINT curPoint;
                 GetCursorPos(&curPoint);
                 
-                SetTimer(hwnd, TIMER_RENDER_MENU, 10, nullptr);
-
                 HMENU hMenu = CreatePopupMenu();
                 if (hMenu) {
                     AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"Open Settings GUI...");
@@ -401,14 +434,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
                     DestroyMenu(hMenu);
                 }
-
-                KillTimer(hwnd, TIMER_RENDER_MENU);
             }
             return 0;
 
         case WM_TIMER:
-            if (wParam == TIMER_RENDER_MENU) {
-                RenderCursor(hwnd);
+            if (wParam == TIMER_RENDER_LOOP) {
+                RenderCursor(hwnd); // Kept alive by internal modal message loops
             }
             return 0;
 
@@ -451,6 +482,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             return 0;
 
         case WM_DESTROY:
+            KillTimer(hwnd, TIMER_RENDER_LOOP);
             Shell_NotifyIconW(NIM_DELETE, &nid);
             UnregisterHotKey(hwnd, 1);
             RemovePropW(hwnd, L"NonRudeHWND");
@@ -467,7 +499,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     timeBeginPeriod(1);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-    // Register UI Class Configuration
     WNDCLASSW settingsWc = {};
     settingsWc.lpfnWndProc = SettingsWndProc;
     settingsWc.hInstance = hInstance;
@@ -477,7 +508,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     settingsWc.lpszClassName = L"CursorSettingsClass";
     RegisterClassW(&settingsWc);
 
-    // Register Overlay Window Class
     const wchar_t CLASS_NAME[] = L"CursorOverlayClass";
     WNDCLASSW wc = {}; 
     wc.lpfnWndProc = WndProc;
@@ -507,6 +537,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT, 'Q');
 
     if (FAILED(InitD2D(hwnd))) { CoUninitialize(); timeEndPeriod(1); return 0; }
+
+    // High resolution layout timer execution hook
+    SetTimer(hwnd, TIMER_RENDER_LOOP, 1, nullptr);
 
     nid.cbSize = sizeof(NOTIFYICONDATAW);
     nid.hWnd = hwnd;
