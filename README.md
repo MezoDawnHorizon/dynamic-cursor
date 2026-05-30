@@ -41,12 +41,20 @@ MaxStretch=2.2      ; Maximum how far the cursor can stretch (prevents extreme d
 
 ---
 
-## Setting Up a Cursor Pack
+## Installation
 
-To use this app with custom cursors, you need to create a cursor pack in Windows Control Panel:
+### Download from Release
+
+1. Head over to the [Releases](https://github.com/your-repo/releases) page
+2. Download the latest version of DynamicCursor.exe
+3. Place the .exe in your desired folder and run it
+
+### Setup Custom Cursors
+
+To use this app with custom cursors, you need to set up a cursor pack in Windows:
 
 1. **Create a Cursor Pack:** Open Windows Control Panel and navigate to `Devices` → `Mouse` → `Pointers` tab
-2. **Set All Cursors to Invisible:** Change all cursor schemes to use the `invisible-cursor.cur` [file](ttps://github.com/nobled/clutter/blob/master/clutter/win32/invisible-cursor.cur)
+2. **Set All Cursors to Invisible:** Change all cursor schemes to use the `invisible-cursor.cur` [file](https://github.com/nobled/clutter/blob/master/clutter/win32/invisible-cursor.cur)
 3. **Apply the Pack:** Apply the cursor pack to replace your system cursors
 
 This allows the Dynamic Cursor overlay to display the animated cursors without interference from the default Windows cursor. The invisible cursor file is based on [nobled/clutter](https://github.com/nobled/clutter/blob/master/clutter/win32/invisible-cursor.cur)
