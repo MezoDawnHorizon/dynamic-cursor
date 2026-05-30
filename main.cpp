@@ -19,6 +19,7 @@
 #define ID_TRAY_RELOAD        1002
 #define ID_TRAY_MODE_STRETCH  1003
 #define ID_TRAY_MODE_ROTATE   1004
+#define TIMER_RENDER_MENU     1
 
 enum SimulationMode { MODE_STRETCH = 0, MODE_ROTATE = 1 };
 
@@ -38,13 +39,12 @@ struct CursorState {
     bool isCenterHotspot;       
     float manualHotspotX;       
     float manualHotspotY;       
-    float baseAngle;      // Rotational correction to make the asset tip face 0° (Right)
-    bool allowRotation;   // Keeps utility icons clean/un-flipped during rotation modes
+    float baseAngle;      
+    bool allowRotation;   
 };
 
 const int CURSOR_COUNT = 5;
 CursorState cursorMap[CURSOR_COUNT] = {
-    // Standard cursors naturally point up-left (-135°). Rotating by +135° brings their vector to 0° (Right)
     { LoadCursor(nullptr, IDC_ARROW),  L"pointer.png", nullptr, false, 4.0f, 4.0f, 135.0f, true  },
     { LoadCursor(nullptr, IDC_HAND),   L"link.png",    nullptr, false, 8.0f, 2.0f, 135.0f, true  },
     { LoadCursor(nullptr, IDC_IBEAM),  L"text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }, 
@@ -171,6 +171,9 @@ void CleanUpD2D() {
 void RenderCursor(HWND hwnd) {
     if (!pRenderTarget) return;
 
+    // Force our overlay to assert dominance over aggressive context menus
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
     pRenderTarget->BeginDraw();
     pRenderTarget->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f)); 
 
@@ -182,22 +185,33 @@ void RenderCursor(HWND hwnd) {
 
     CURSORINFO ci = { sizeof(CURSORINFO) };
     bool foundMatchedCursor = false;
+    bool cursorIsShowing = false;
     CursorState activeCursor;
 
-    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING)) {
-        for (int i = 0; i < CURSOR_COUNT; i++) {
-            if (ci.hCursor == cursorMap[i].sysHandle) {
-                activeCursor = cursorMap[i];
+    if (GetCursorInfo(&ci)) {
+        if (ci.flags & CURSOR_SHOWING) {
+            cursorIsShowing = true;
+            for (int i = 0; i < CURSOR_COUNT; i++) {
+                if (ci.hCursor == cursorMap[i].sysHandle) {
+                    activeCursor = cursorMap[i];
+                    foundMatchedCursor = true;
+                    break;
+                }
+            }
+            
+            // Fallback to custom pointer instead of vanishing on unknown types
+            if (!foundMatchedCursor) {
+                activeCursor = cursorMap[0]; 
                 foundMatchedCursor = true;
-                break;
             }
         }
     }
 
-    if (!foundMatchedCursor || !activeCursor.bitmap) {
+    if (!cursorIsShowing || !activeCursor.bitmap) {
         curX = targetX;
         curY = targetY;
         pRenderTarget->EndDraw();
+        DwmFlush();
         return; 
     }
 
@@ -237,7 +251,6 @@ void RenderCursor(HWND hwnd) {
 
     D2D1::Matrix3x2F transform;
     
-    // Check if the current mode is classic stretch OR if this utility cursor shouldn't spin
     if (g_Config.currentMode == MODE_STRETCH || !activeCursor.allowRotation) {
         transform = 
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
@@ -247,8 +260,6 @@ void RenderCursor(HWND hwnd) {
             D2D1::Matrix3x2F::Translation(curX, curY);
     } 
     else {
-        // Corrected Rotation Pipeline: 
-        // 1. Hotspot to Origin -> 2. Asset Correction (Tip to 0°) -> 3. Linear Stretch -> 4. Velocity Rotation -> 5. Placement
         transform = 
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
             D2D1::Matrix3x2F::Rotation(activeCursor.baseAngle, D2D1::Point2F(0, 0)) *
@@ -260,6 +271,9 @@ void RenderCursor(HWND hwnd) {
     pRenderTarget->SetTransform(transform);
     pRenderTarget->DrawBitmap(activeCursor.bitmap, D2D1::RectF(0, 0, size.width, size.height));
     pRenderTarget->EndDraw();
+
+    // Flushes render queue and limits execution rate perfectly to the display monitor refresh rate
+    DwmFlush(); 
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -269,6 +283,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                 POINT curPoint;
                 GetCursorPos(&curPoint);
                 
+                // 1. Fire up a fast window timer to drive RenderCursor while TrackPopupMenu blocks WinMain
+                SetTimer(hwnd, TIMER_RENDER_MENU, 10, nullptr);
+
                 HMENU hMenu = CreatePopupMenu();
                 if (hMenu) {
                     AppendMenuW(hMenu, g_Config.currentMode == MODE_STRETCH ? MF_CHECKED : MF_UNCHECKED, ID_TRAY_MODE_STRETCH, L"Stretch Animation Mode");
@@ -282,6 +299,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
                     DestroyMenu(hMenu);
                 }
+
+                // 2. Kill the timer immediately once the context menu closes and normal execution returns
+                KillTimer(hwnd, TIMER_RENDER_MENU);
+            }
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == TIMER_RENDER_MENU) {
+                // Windows feeds us these messages inside its own modal loops!
+                RenderCursor(hwnd);
             }
             return 0;
 
@@ -370,8 +397,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         } else {
-            RenderCursor(hwnd);
-            DwmFlush(); // Perfect frame rate pacing synced to monitor refresh intervals
+            RenderCursor(hwnd); // Normal state loop
         }
     }
 
