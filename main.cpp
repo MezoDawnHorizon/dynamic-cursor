@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <wincodec.h>
-#include <dwmapi.h> 
+#include <dwmapi.h>
 #include <mmsystem.h>
 #include <shellapi.h>
 #include <commdlg.h>
@@ -67,7 +67,7 @@ const int CURSOR_COUNT = 5;
 CursorState cursorMap[CURSOR_COUNT] = {
     { LoadCursor(nullptr, IDC_ARROW),  L".\\config\\pointer.png", nullptr, false, 4.0f, 4.0f, 135.0f, true  },
     { LoadCursor(nullptr, IDC_HAND),   L".\\config\\link.png",    nullptr, false, 8.0f, 2.0f, 135.0f, true  },
-    { LoadCursor(nullptr, IDC_IBEAM),  L".\\config\\text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }, 
+    { LoadCursor(nullptr, IDC_IBEAM),  L".\\config\\text.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false },
     { LoadCursor(nullptr, IDC_SIZEWE), L".\\config\\horz.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false },
     { LoadCursor(nullptr, IDC_SIZENS), L".\\config\\vert.png",    nullptr, true,  0.0f, 0.0f, 0.0f,   false }
 };
@@ -94,8 +94,8 @@ float lastAngle = 0.0f; // Last calculated rotation angle (stored to avoid recal
 // ============================================================================
 
 // Window handle for the settings dialog (nullptr if closed)
-HWND g_hwndSettings = nullptr; 
-NOTIFYICONDATAW nid = {}; 
+HWND g_hwndSettings = nullptr;
+NOTIFYICONDATAW nid = {};
 const wchar_t* CONFIG_DIR  = L"config";
 const wchar_t* CONFIG_FILE = L".\\config\\settings.ini";
 
@@ -161,7 +161,7 @@ ID2D1Bitmap* LoadTextureFromFile(const wchar_t* filename) {
     IStream* pStream = nullptr;
 
     // Open file without locking it (other programs can still modify it)
-    HANDLE hFile = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 
+    HANDLE hFile = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) return nullptr;
 
@@ -241,17 +241,17 @@ HRESULT InitD2D(HWND hwnd) {
         RECT rc;
         GetClientRect(hwnd, &rc);
         D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
-        
+
         D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
             D2D1_RENDER_TARGET_TYPE_DEFAULT,
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
         );
-        
+
         hr = pFactory->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hwnd, size), &pRenderTarget);
     }
     if (SUCCEEDED(hr)) {
         hr = pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(0.0f, 1.0f, 1.0f, 1.0f), &pBrush);
-        
+
         for (int i = 0; i < CURSOR_COUNT; i++) {
             cursorMap[i].bitmap = LoadTextureFromFile(cursorMap[i].filename);
         }
@@ -319,7 +319,7 @@ void RenderCursor(HWND hwnd) {
         curY = targetY;
         pRenderTarget->EndDraw();
         DwmFlush();
-        return; 
+        return;
     }
 
     // Calculate hotspot (the click point of the cursor)
@@ -336,12 +336,12 @@ void RenderCursor(HWND hwnd) {
 
     // Adaptive physics: adjust how fast the cursor catches up based on distance
     // Close movements are snappy, far movements are smooth and elastic
-    float stiffness = g_Config.stiffnessClose; 
+    float stiffness = g_Config.stiffnessClose;
     if (distance > 180.0f)      stiffness = g_Config.stiffnessFar;      // Very far: use maximum lerp speed
     else if (distance > 60.0f)  stiffness = g_Config.stiffnessMedium;  // Medium distance: moderate speed
     else if (distance < 2.0f)   stiffness = 1.0f;                       // Extremely close: instant positioning
     else if (distance < 15.0f)  stiffness = g_Config.stiffnessClose * 2.833f;  // Very close: smoother transition
-    
+
     // Apply physics: move rendered cursor toward target position
     curX += dx * stiffness;
     curY += dy * stiffness;
@@ -372,19 +372,19 @@ void RenderCursor(HWND hwnd) {
     // Build transformation matrix based on simulation mode
     // Transform: translate to origin -> rotate -> stretch -> rotate back -> translate to final position
     D2D1::Matrix3x2F transform;
-    
+
     if (g_Config.currentMode == MODE_STRETCH || !activeCursor.allowRotation) {
         // STRETCH MODE: deform the image in direction of movement
-        transform = 
+        transform =
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
             D2D1::Matrix3x2F::Rotation(-angle, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Scale(stretchX, stretchY, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Rotation(angle, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Translation(curX, curY);
-    } 
+    }
     else {
         // ROTATE MODE: spin the entire image toward movement direction
-        transform = 
+        transform =
             D2D1::Matrix3x2F::Translation(-hX, -hY) *
             D2D1::Matrix3x2F::Rotation(activeCursor.baseAngle, D2D1::Point2F(0, 0)) *
             D2D1::Matrix3x2F::Scale(stretchX, stretchY, D2D1::Point2F(0, 0)) *
@@ -397,7 +397,7 @@ void RenderCursor(HWND hwnd) {
     pRenderTarget->DrawBitmap(activeCursor.bitmap, D2D1::RectF(0, 0, size.width, size.height));
     pRenderTarget->EndDraw();
     // Flush to ensure rendered frame is displayed immediately
-    DwmFlush(); 
+    DwmFlush();
 }
 
 // ============================================================================
@@ -409,7 +409,7 @@ void RenderCursor(HWND hwnd) {
 void ProcessImportedFile(HWND hwndSettings, const wchar_t* sourcePath) {
     HWND hwndCombo = GetDlgItem(hwndSettings, IDC_COMBO_CURSOR);
     int targetIndex = static_cast<int>(SendMessageW(hwndCombo, CB_GETCURSEL, 0, 0));
-    
+
     if (targetIndex == CB_ERR) {
         MessageBoxW(hwndSettings, L"Please select a target cursor type first!", L"Error", MB_OK | MB_ICONWARNING);
         return;
@@ -440,14 +440,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
         case WM_CREATE: {
             // Create UI controls for settings window
             // Label for cursor type selection
-            CreateWindowExW(0, L"STATIC", L"1. Select Target Cursor Asset Type:", WS_CHILD | WS_VISIBLE, 
+            CreateWindowExW(0, L"STATIC", L"1. Select Target Cursor Asset Type:", WS_CHILD | WS_VISIBLE,
                             20, 20, 340, 20, hwnd, nullptr, nullptr, nullptr);
 
             // Dropdown menu to select which cursor type to customize
-            HWND hwndCombo = CreateWindowExW(0, L"COMBOBOX", nullptr, 
-                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL, 
+            HWND hwndCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
+                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
                                             20, 45, 340, 200, hwnd, reinterpret_cast<HMENU>(IDC_COMBO_CURSOR), nullptr, nullptr);
-            
+
             // Populate dropdown with cursor type names
             SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Default Arrow (pointer.png)"));
             SendMessageW(hwndCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Link Hand (link.png)"));
@@ -457,19 +457,19 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             SendMessageW(hwndCombo, CB_SETCURSEL, 0, 0);
 
             // Label for file loading section
-            CreateWindowExW(0, L"STATIC", L"2. Load Image File Configuration:", WS_CHILD | WS_VISIBLE, 
+            CreateWindowExW(0, L"STATIC", L"2. Load Image File Configuration:", WS_CHILD | WS_VISIBLE,
                             20, 95, 340, 20, hwnd, nullptr, nullptr, nullptr);
 
             // Button to browse and select PNG file from file system
-            CreateWindowExW(0, L"BUTTON", L"Browse System PNG...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 
+            CreateWindowExW(0, L"BUTTON", L"Browse System PNG...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                             20, 120, 160, 30, hwnd, reinterpret_cast<HMENU>(IDC_BTN_BROWSE), nullptr, nullptr);
 
             // Helper text explaining drag-drop functionality
-            CreateWindowExW(0, L"STATIC", L"💡 Interaction Tip:\nYou can drag and drop your custom .png image file directly anywhere onto this UI surface area.", 
+            CreateWindowExW(0, L"STATIC", L"💡 Interaction Tip:\nYou can drag and drop your custom .png image file directly anywhere onto this UI surface area.",
                             WS_CHILD | WS_VISIBLE, 20, 170, 340, 50, hwnd, nullptr, nullptr, nullptr);
 
             // Enable drag-drop functionality for this window
-            DragAcceptFiles(hwnd, TRUE); 
+            DragAcceptFiles(hwnd, TRUE);
             return 0;
         }
 
@@ -477,7 +477,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             // User dragged and dropped a file onto the window
             HDROP hDrop = reinterpret_cast<HDROP>(wParam);
             wchar_t droppedPath[MAX_PATH];
-            
+
             if (DragQueryFileW(hDrop, 0, droppedPath, MAX_PATH)) {
                 ProcessImportedFile(hwnd, droppedPath);
             }
@@ -491,14 +491,14 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
                 // Open file browser dialog to select PNG image
                 OPENFILENAMEW ofn = { sizeof(OPENFILENAMEW) };
                 wchar_t selectedPath[MAX_PATH] = { 0 };
-                
+
                 ofn.hwndOwner = hwnd;
                 ofn.lpstrFile = selectedPath;
                 ofn.nMaxFile = MAX_PATH;
                 ofn.lpstrFilter = L"Portable Network Graphics (*.png)\0*.png\0";
                 ofn.nFilterIndex = 1;
                 ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-                
+
                 if (GetOpenFileNameW(&ofn)) {
                     ProcessImportedFile(hwnd, selectedPath);
                 }
@@ -511,7 +511,7 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
             return 0;
 
         case WM_DESTROY:
-            g_hwndSettings = nullptr; 
+            g_hwndSettings = nullptr;
             return 0;
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -532,7 +532,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             if (lParam == WM_RBUTTONUP) {
                 POINT curPoint;
                 GetCursorPos(&curPoint);
-                
+
                 // Build and display context menu
                 HMENU hMenu = CreatePopupMenu();
                 if (hMenu) {
@@ -545,7 +545,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
                     AppendMenuW(hMenu, MF_STRING, ID_TRAY_RELOAD, L"Reload settings.ini");
                     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
                     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit Cursor Overlay");
-                    
+
                     SetForegroundWindow(hwnd);
                     TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, curPoint.x, curPoint.y, 0, hwnd, NULL);
                     DestroyMenu(hMenu);
@@ -646,11 +646,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     RegisterClassW(&settingsWc);
 
     const wchar_t CLASS_NAME[] = L"CursorOverlayClass";
-    WNDCLASSW wc = {}; 
+    WNDCLASSW wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-    RegisterClassW(&wc); 
+    RegisterClassW(&wc);
 
     // ========== Get Virtual Screen Dimensions ==========
     // Create overlay window that spans all connected monitors
@@ -664,9 +664,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     // WS_EX_TRANSPARENT: Clicks pass through the window
     // WS_EX_TOPMOST: Stay above all windows
     // WS_EX_TOOLWINDOW: Hide from taskbar
-    HWND hwnd = CreateWindowExW( 
-        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, 
-        CLASS_NAME, L"Dynamic Cursor Overlay", WS_POPUP, 
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        CLASS_NAME, L"Dynamic Cursor Overlay", WS_POPUP,
         virtualLeft, virtualTop, virtualWidth, virtualHeight, nullptr, nullptr, hInstance, nullptr
     );
 
@@ -690,7 +690,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     nid.uID = 1;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION); 
+    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wcscpy_s(nid.szTip, L"Dynamic Cursor Overlay");
     Shell_NotifyIconW(NIM_ADD, &nid);
 
